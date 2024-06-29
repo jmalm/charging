@@ -4,7 +4,7 @@ import appdaemon.plugins.hass.hassapi as hass
 import common
 
 
-class ChargingPhase(Enum):
+class Phase(Enum):
     Unknown = 0
     P1 = 1
     P2 = 2
@@ -82,18 +82,24 @@ class LoadBalancer(hass.Hass):
 
         load_balance_threshold = self.main_fuse_A * 0.9  # Balance load when current is higher than 90% of main fuse.
         above_threshold = l1 > load_balance_threshold or l2 > load_balance_threshold or l3 > load_balance_threshold
-        dynamic_circuit_limit = float(self.dynamic_circuit_limit_entity.state)
-        self.log(f"Dynamic circuit limit: {dynamic_circuit_limit}", level="INFO")
-        # TODO: Do we need to check the limit of each phase here? Check what this state is when only one phase is
-        #       limited.
 
-        if not common.CHARGING and dynamic_circuit_limit >= self.max_charging_current:
+        # Get the dynamic circuit limit for each phase.
+        self.dynamic_circuit_limit_entity.get_state()  # Update entity.
+        dynamic_circuit_limit = {
+            Phase.P1: float(self.dynamic_circuit_limit_entity.attributes['state_dynamicCircuitCurrentP1']),
+            Phase.P2: float(self.dynamic_circuit_limit_entity.attributes['state_dynamicCircuitCurrentP2']),
+            Phase.P3: float(self.dynamic_circuit_limit_entity.attributes['state_dynamicCircuitCurrentP3']),
+        }
+        self.log(f"Dynamic circuit limit: {dynamic_circuit_limit}", level="INFO")
+
+        min_dynamic_circuit_limit = min(dynamic_circuit_limit.values())
+        if not common.CHARGING and min_dynamic_circuit_limit >= self.max_charging_current:
             self.log(f"Not charging, so no need to load balance.", level="INFO")
             return
 
         charger_current = float(self.charger_current_entity.state)
 
-        if not above_threshold and float(self.dynamic_circuit_limit_entity.state) >= self.max_charging_current:
+        if not above_threshold and min_dynamic_circuit_limit >= self.max_charging_current:
             # The charging is not limited, and we're still not over the main fuse. Nothing to do.
             self.log("Charger is charging, but not limited, "
                      f"and no phase is loaded above the threshold for load balancing ({load_balance_threshold} A).",
@@ -106,17 +112,17 @@ class LoadBalancer(hass.Hass):
             self.balance_three_phase(l1, l2, l3, charger_current)
 
     def balance_one_phase(self, l1, l2, l3, charger_current):
-        charging_phase = ChargingPhase.Unknown
+        charging_phase = Phase.Unknown
         if charger_current >= self.min_charging_current:
             # The charger is currently charging a vehicle - but on which phase?
             charging_phase = self.get_charging_phase(l1, l2, l3)
         self.log(f"Charging phase: {charging_phase.name}", level="INFO")
 
         # Figure out the load on each phase, without the charger.
-        other_load = {ChargingPhase.P1: l1,
-                      ChargingPhase.P2: l2,
-                      ChargingPhase.P3: l3}
-        if charging_phase != ChargingPhase.Unknown:
+        other_load = {Phase.P1: l1,
+                      Phase.P2: l2,
+                      Phase.P3: l3}
+        if charging_phase != Phase.Unknown:
             other_load[charging_phase] -= charger_current
         self.log(f"Other load: {other_load}", level="INFO")
 
@@ -133,7 +139,7 @@ class LoadBalancer(hass.Hass):
         raise NotImplementedError("Three-phase load balancing not yet implemented.")
 
     def get_charging_phase(self, l1, l2, l3):
-        if self.charging_phase is not ChargingPhase.Unknown:
+        if self.charging_phase is not Phase.Unknown:
             # We already know the charging phase.
             return self.charging_phase
 
@@ -142,16 +148,16 @@ class LoadBalancer(hass.Hass):
 
         if not common.CHARGING:
             # The charger is not charging a vehicle. We can't guess the charging phase.
-            return ChargingPhase.Unknown
+            return Phase.Unknown
 
         if l1 > l2 and l1 > l3:
             # L1 is the highest current.
-            return ChargingPhase.P1
+            return Phase.P1
         elif l2 > l1 and l2 > l3:
             # L2 is the highest current.
-            return ChargingPhase.P2
+            return Phase.P2
         elif l3 > l1 and l3 > l2:
             # L3 is the highest current.
-            return ChargingPhase.P3
+            return Phase.P3
 
-        return ChargingPhase.Unknown
+        return Phase.Unknown
