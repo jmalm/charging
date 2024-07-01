@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import appdaemon.plugins.hass.hassapi as hass
 
-import common
-from common import Phase
+from common import Phase, Currents, CHARGING
 
 
 class LoadBalancer(hass.Hass):
+    """App for making sure that the charger is not overloaded."""
     enabled = False
     one_phase_charging = False
     main_fuse_A = 0  # Refuse to guess
@@ -13,9 +15,12 @@ class LoadBalancer(hass.Hass):
     current_l2_entity = None
     current_l3_entity = None
     charging_phase = None
+    charger_status_entity = None
     charger_current_entity = None
-    dynamic_circuit_limit_entity = None
+    circuit_dynamic_limit_entity = None
     max_charging_current = 16  # A
+    circuit_id = None
+    circuit_dynamic_limit_target: Currents | None = None
 
     def initialize(self):
         # Should we do load balancing?
@@ -42,20 +47,26 @@ class LoadBalancer(hass.Hass):
         self.listen_state(self.balance, current_l3_entity_id)
 
         # Charger status
+        charger_status_entity_id = str(self.args['charger_status_entity_id'])
+        self.charger_status_entity = self.get_entity(charger_status_entity_id)
         charger_current_entity_id = str(self.args['charger_current_entity_id'])
         self.charger_current_entity = self.get_entity(charger_current_entity_id)
+        self.circuit_id = self.charger_status_entity.attributes['circuit_id']
 
         # Circuit dynamic current limit
-        dynamic_circuit_limit_entity_id = str(self.args['dynamic_circuit_limit_entity_id'])
-        self.dynamic_circuit_limit_entity = self.get_entity(dynamic_circuit_limit_entity_id)
+        circuit_dynamic_limit_entity_id = str(self.args['circuit_dynamic_limit_entity_id'])
+        self.circuit_dynamic_limit_entity = self.get_entity(circuit_dynamic_limit_entity_id)
 
     def load_balancing_cb(self, entity, attribute, old, new, kwargs):
+        """Callback for the load balancing switch."""
         self.enabled = new == 'on'
 
     def one_phase_charging_cb(self, entity, attribute, old, new, kwargs):
+        """Callback for the one phase charging switch."""
         self.one_phase_charging = new == 'on'
 
     def balance(self, entity, attribute, old, new, kwargs):
+        """Make sure that the currents are not higher than the main fuse."""
         l1 = float(self.current_l1_entity.state)
         l2 = float(self.current_l2_entity.state)
         l3 = float(self.current_l3_entity.state)
@@ -76,23 +87,22 @@ class LoadBalancer(hass.Hass):
         load_balance_threshold = self.main_fuse_A * 0.9  # Balance load when current is higher than 90% of main fuse.
         above_threshold = l1 > load_balance_threshold or l2 > load_balance_threshold or l3 > load_balance_threshold
 
-        # Get the dynamic circuit limit for each phase.
-        self.dynamic_circuit_limit_entity.get_state()  # Update entity.
-        dynamic_circuit_limit = {
-            Phase.P1: float(self.dynamic_circuit_limit_entity.attributes['state_dynamicCircuitCurrentP1']),
-            Phase.P2: float(self.dynamic_circuit_limit_entity.attributes['state_dynamicCircuitCurrentP2']),
-            Phase.P3: float(self.dynamic_circuit_limit_entity.attributes['state_dynamicCircuitCurrentP3']),
-        }
-        self.log(f"Dynamic circuit limit: {dynamic_circuit_limit}", level="INFO")
+        # Get the circuit dynamic limit for each phase.
+        circuit_dynamic_limit = self.get_circuit_dynamic_limit()
+        self.log(f"Circuit dynamic limit: {circuit_dynamic_limit}", level="DEBUG")
 
-        min_dynamic_circuit_limit = min(dynamic_circuit_limit.values())
-        if not common.CHARGING and min_dynamic_circuit_limit >= self.max_charging_current:
-            self.log(f"Not charging, so no need to load balance.", level="INFO")
+        min_circuit_dynamic_limit = circuit_dynamic_limit.min()
+        if not CHARGING and min_circuit_dynamic_limit >= self.max_charging_current:
+            self.log(f"Not charging and no limit set - nothing to do.", level="INFO")
             return
+
+        if not CHARGING and min_circuit_dynamic_limit < self.max_charging_current:
+            self.log(f"Not charging, but circuit dynamic limit is {circuit_dynamic_limit} - resetting.")
+            self.set_circuit_dynamic_limit(Currents(40, 40, 40))
 
         charger_current = float(self.charger_current_entity.state)
 
-        if not above_threshold and min_dynamic_circuit_limit >= self.max_charging_current:
+        if not above_threshold and min_circuit_dynamic_limit >= self.max_charging_current:
             # The charging is not limited, and we're still not over the main fuse. Nothing to do.
             self.log("Charger is charging, but not limited, "
                      f"and no phase is loaded above the threshold for load balancing ({load_balance_threshold} A).",
@@ -105,6 +115,7 @@ class LoadBalancer(hass.Hass):
             self.balance_three_phase(l1, l2, l3, charger_current)
 
     def balance_one_phase(self, l1, l2, l3, charger_current):
+        """Balance the load when the charger is set to only charge on one phase."""
         charging_phase = Phase.Unknown
         if charger_current >= self.min_charging_current:
             # The charger is currently charging a vehicle - but on which phase?
@@ -129,9 +140,11 @@ class LoadBalancer(hass.Hass):
         # Do we need to adjust the circuit current limit?
 
     def balance_three_phase(self, l1, l2, l3, charger_current):
+        """Balance the load when the charger is set to charge on all three phases."""
         raise NotImplementedError("Three-phase load balancing not yet implemented.")
 
     def get_charging_phase(self, l1, l2, l3):
+        """Get (possibly guessing) the phase that the charger is charging on."""
         if self.charging_phase is not Phase.Unknown:
             # We already know the charging phase.
             return self.charging_phase
@@ -139,7 +152,7 @@ class LoadBalancer(hass.Hass):
         # We don't know yet. Let's guess based on current readings.
         # If the charger is charging a vehicle, let's assume it is charging on the phase with the highest load.
 
-        if not common.CHARGING:
+        if not CHARGING:
             # The charger is not charging a vehicle. We can't guess the charging phase.
             return Phase.Unknown
 
@@ -154,3 +167,34 @@ class LoadBalancer(hass.Hass):
             return Phase.P3
 
         return Phase.Unknown
+
+    def set_circuit_dynamic_limit(self, currents: Currents):
+        """Set the circuit dynamic limit."""
+        current_limits = self.get_circuit_dynamic_limit()
+        if self.circuit_dynamic_limit_target is not None:
+            if (current_limits.p1 == self.circuit_dynamic_limit_target.p1 and
+                    current_limits.p2 == self.circuit_dynamic_limit_target.p2 and
+                    current_limits.p3 == self.circuit_dynamic_limit_target.p3):
+                self.log(f"Circuit dynamic limit is now set to {self.circuit_dynamic_limit_target}.",
+                         level="INFO")
+                self.circuit_dynamic_limit_target = None
+                return
+            self.log(f"Circuit dynamic limit is already being set to {self.circuit_dynamic_limit_target}.",
+                     level="INFO")
+            return
+        self.log(f"Setting circuit dynamic limit to {currents}.", level="INFO")
+        self.call_service('easee/set_circuit_dynamic_limit',
+                          circuit_id=self.circuit_id,
+                          currentP1=currents.p1,
+                          currentP2=currents.p2,
+                          currentP3=currents.p3)
+        self.circuit_dynamic_limit_target = currents
+
+    def get_circuit_dynamic_limit(self) -> Currents:
+        """Get the currently active circuit dynamic limit."""
+        self.circuit_dynamic_limit_entity.get_state()
+        current_state = self.circuit_dynamic_limit_entity.attributes
+        return Currents(current_state['state_dynamicCircuitCurrentP1'],
+                        current_state['state_dynamicCircuitCurrentP2'],
+                        current_state['state_dynamicCircuitCurrentP3'])
+
