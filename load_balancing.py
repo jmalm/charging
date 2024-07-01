@@ -9,9 +9,10 @@ from common import Phase, Currents
 
 class LoadBalancer(hass.Hass):
     """App for making sure that the charger is not overloaded."""
-    enabled = False
+    load_balancing_enabled = False
     one_phase_charging = False
-    charge_now = False
+    charge_now_switch = False
+    smart_charge = False
     main_fuse_A = 0  # Refuse to guess
     load_balance_threshold = 0
     min_charging_current = 6  # A
@@ -28,8 +29,13 @@ class LoadBalancer(hass.Hass):
     def initialize(self):
         # Should we do load balancing?
         do_load_balancing_entity_id = str(self.args['load_balancing_entity_id'])
-        self.enabled = self.get_state(do_load_balancing_entity_id) == 'on'
+        self.load_balancing_enabled = self.get_state(do_load_balancing_entity_id) == 'on'
         self.listen_state(self.load_balancing_cb, do_load_balancing_entity_id)
+
+        # Shall we do smart charging?
+        smart_charging_entity_id = str(self.args['smart_charging_entity_id'])
+        self.smart_charge = self.get_state(smart_charging_entity_id) == 'on'
+        self.listen_state(self.smart_charging_cb, smart_charging_entity_id)
 
         # Should we do one-phase charging (and load balancing)?
         do_one_phase_charging_entity_id = str(self.args['one_phase_charging_entity_id'])
@@ -39,7 +45,7 @@ class LoadBalancer(hass.Hass):
 
         # Shall charging be on now?
         charge_now_entity_id = str(self.args['charge_now_entity_id'])
-        self.charge_now = self.get_state(charge_now_entity_id) == 'on'
+        self.charge_now_switch = self.get_state(charge_now_entity_id) == 'on'
         self.listen_state(self.charge_now_cb, charge_now_entity_id)
 
         self.main_fuse_A = int(self.args['main_fuse_A'])
@@ -71,25 +77,43 @@ class LoadBalancer(hass.Hass):
 
     def load_balancing_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the load balancing switch."""
-        self.enabled = new == 'on'
+        self.load_balancing_enabled = new == 'on'
+        self.log(f"Load balancing: {new}")
+        self.balance()
+
+    def smart_charging_cb(self, entity, attribute, old, new, kwargs):
+        """Callback for the smart charging switch."""
+        self.smart_charge = new == 'on'
+        self.log(f"Smart charging: {new}")
+        self.log(f"Charge now: {self.charge_now} (Charge now switch={self.charge_now_switch})")
         self.balance()
 
     def one_phase_charging_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the one phase charging switch."""
         self.one_phase_charging = new == 'on'
-        assert self.one_phase_charging, "Three-phase charging is not supported yet"
+        self.log(f"One phase charging: {new}")
+        assert self.one_phase_charging, "Three-phase charging or load balancing is not supported yet"
         self.balance()
 
     def charge_now_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the charge now switch."""
-        self.charge_now = new == 'on'
-        self.log(f"Charge now: {self.charge_now}")
+        self.charge_now_switch = new == 'on'
+        self.log(f"Charge now switch: {new}")
+        self.log(f"Charge now: {self.charge_now} (Smart charge={self.smart_charge})")
         self.balance()
+
+    @property
+    def charge_now(self):
+        return self.charge_now_switch or not self.smart_charge
 
     def balance(self, *args, **kwargs):
         """Make sure that the currents are not higher than the main fuse."""
         if not self.circuit_dynamic_limit_target_reached():
+            # Circuit dynamic limit is being set. Wait for it to be reached.
             return
+
+        if not self.load_balancing_enabled:
+            self.handle_non_balanced_charging()
 
         l1 = float(self.current_l1_entity.state)
         l2 = float(self.current_l2_entity.state)
@@ -105,8 +129,8 @@ class LoadBalancer(hass.Hass):
         if l3 > self.main_fuse_A:
             self.log(f"L3 current is higher than main fuse: {l3}", level="WARNING")
 
-        if not self.enabled:
-            self.log(f"Load balancing is disabled.", level="INFO")
+        if not self.load_balancing_enabled:
+            self.log(f"Load balancing is disabled.", level="DEBUG")
             return
 
         above_threshold = l1 > self.load_balance_threshold or l2 > self.load_balance_threshold or l3 > self.load_balance_threshold
@@ -130,9 +154,9 @@ class LoadBalancer(hass.Hass):
 
         if not above_threshold and min_circuit_dynamic_limit >= self.max_charging_current:
             # The charging is not limited, and we're still not over the main fuse. Nothing to do.
-            self.log("Charger is charging without limitation, "
+            self.log("Charging is enabled without limitation, "
                      f"and no phase is loaded above the threshold for load balancing ({self.load_balance_threshold} A). "
-                     "Nothing to do.", level="INFO")
+                     "Nothing to do.", level="DEBUG")
             return
 
         if self.one_phase_charging:
@@ -176,8 +200,6 @@ class LoadBalancer(hass.Hass):
 
         # Is the charger charging on the same phase?
         # If not, should we switch charging phase? Maybe look at the past 15 or so minutes?
-
-        # Do we need to adjust the circuit current limit?
 
     def balance_three_phase(self, l1, l2, l3, charger_current):
         """Balance the load when the charger is set to charge on all three phases."""
@@ -246,3 +268,19 @@ class LoadBalancer(hass.Hass):
         self.log(f"Circuit dynamic limit is being set to {self.circuit_dynamic_limit_target}.",
                  level="DEBUG")
         return False
+
+    def handle_non_balanced_charging(self):
+        if self.charge_now:
+            target_limit = Currents(40, 40, 40)
+            if self.get_circuit_dynamic_limit() != target_limit:
+                self.log(
+                    f"Load balancing is disabled. Enabling charging by resetting circuit dynamic limit: {target_limit}",
+                    level="INFO")
+                self.set_circuit_dynamic_limit(target_limit)
+        else:
+            target_limit = Currents(0, 0, 0)
+            if self.get_circuit_dynamic_limit() != target_limit:
+                self.log(
+                    f"Load balancing is disabled. Disabling charging by setting circuit dynamic limit: {target_limit}",
+                    level="INFO")
+                self.set_circuit_dynamic_limit(target_limit)
