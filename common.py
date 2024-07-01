@@ -1,8 +1,5 @@
 from enum import Enum
 
-CHARGING = False
-"True if a car is currently charging"
-
 
 class Phase(Enum):
     """Represents a phase"""
@@ -40,6 +37,27 @@ class Currents:
     def min(self):
         """Returns the minimum current"""
         return min(self._currents.values())
+
+    def max(self):
+        """Returns the maximum current"""
+        return max(self._currents.values())
+
+    def min_phase(self) -> Phase:
+        """Returns the phase with the minimum current"""
+        return min(self._currents, key=self._currents.get)
+
+    def max_phase(self) -> Phase:
+        """Returns the phase with the maximum current"""
+        return max(self._currents, key=self._currents.get)
+
+    def __getitem__(self, item: Phase):
+        return self._currents[item]
+
+    def __setitem__(self, key: Phase, value: float):
+        self._currents[key] = value
+
+    def __eq__(self, other):
+        return self.p1 == other.p1 and self.p2 == other.p2 and self.p3 == other.p3
 
     def __str__(self):
         return f"P1: {self.p1} A, P2: {self.p2} A, P3: {self.p3} A"
