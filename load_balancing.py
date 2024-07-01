@@ -1,14 +1,7 @@
-from enum import Enum
 import appdaemon.plugins.hass.hassapi as hass
 
 import common
-
-
-class Phase(Enum):
-    Unknown = 0
-    P1 = 1
-    P2 = 2
-    P3 = 3
+from common import Phase
 
 
 class LoadBalancer(hass.Hass):
