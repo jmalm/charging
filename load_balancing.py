@@ -167,7 +167,7 @@ class LoadBalancer(hass.Hass):
         other_load = Currents(l1, l2, l3)
         if charging_phase != Phase.Unknown:
             other_load[charging_phase] -= charger_current
-        self.log(f"Other load: {other_load}", level="INFO")
+        self.log(f"Other load: {other_load}", level="DEBUG")
 
         # Which phase has the lowest other load?
         min_load_phase = other_load.min_phase()
@@ -181,7 +181,7 @@ class LoadBalancer(hass.Hass):
             self.log(f"Charging is already enabled on phase {charging_phase.name}", level="DEBUG")
         available_current = self.load_balance_threshold - other_load[charging_phase]
         new_circuit_dynamic_limit = Currents(0, 0, 0)
-        new_circuit_dynamic_limit[charging_phase] = floor(available_current)
+        new_circuit_dynamic_limit[charging_phase] = min(floor(available_current), self.charger.max_charging_current)
         current_circuit_dynamic_limit = self.charger.circuit_dynamic_limit
         if new_circuit_dynamic_limit.max() < current_circuit_dynamic_limit.max():
             self.log(f"Lowering circuit dynamic limit: {new_circuit_dynamic_limit}", level="INFO")
