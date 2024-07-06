@@ -57,7 +57,7 @@ class Scheduler(Hass):
         self.price_entity = self.get_entity(price_entity_id)
 
         # Run scheduling every half hour + 1 minute.
-        next_occurrence = ceil_dt(datetime.now(), timedelta(minutes=30)) + timedelta(minutes=1)
+        next_occurrence = round_datetime_up(self.get_now(), timedelta(minutes=30), timedelta(minutes=1))
         # next_occurrence = datetime.now() + timedelta(minutes=1)
         self.log(f"Scheduling next at {next_occurrence}")
         self.run_every(self.scheduler_cb, next_occurrence, 30 * 60)
@@ -148,8 +148,8 @@ class Scheduler(Hass):
             else:
                 self.log("Charging is already disabled.", level="DEBUG")
         # Set state, including schedule attribute (which may have changed even if charge-now didn't).
-        self.charge_now_switch.set_state(state=target_state, attributes={"reason": f"scheduled {target_state}",
-                                                                         "schedule": contiguous_slots})
+        # self.charge_now_switch.set_state(state=target_state, attributes={"reason": f"scheduled {target_state}",
+        #                                                                  "schedule": contiguous_slots})
 
     def get_min_hours_to_charge(self, current_soc, target_soc=100):
         """Get the minimum number of hours that the car needs to be charged, i.e. at max charging power."""
@@ -193,6 +193,22 @@ class Scheduler(Hass):
         return contiguous_slots
 
 
-def ceil_dt(dt, delta):
-    import math
-    return datetime.min + math.ceil((dt - datetime.min) / delta) * delta
+def round_datetime_up(
+        ts: datetime,
+        delta: timedelta,
+        offset: timedelta = timedelta(minutes=0)) -> datetime:
+    """Snap to next available timedelta.
+
+    Preserve any timezone info on `ts`.
+
+    If we are at the given exact delta, then do not round, only add offset.
+
+    :param ts: Timestamp we want to round
+    :param delta: Our snap grid
+    :param offset: Add a fixed time offset at the top of rounding
+    :return: Rounded up datetime
+
+    From https://stackoverflow.com/a/71482147/442138.
+    """
+    rounded = ts + (datetime.min.replace(tzinfo=ts.tzinfo) - ts) % delta
+    return rounded + offset
