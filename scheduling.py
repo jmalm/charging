@@ -110,17 +110,13 @@ class Scheduler(Hass):
     def schedule(self):
         """Schedule charging."""
         if not self.smart_charge:
-            if self.charge_now_switch.get_state() == "off":
-                self.log("Smart charging disabled, but charging is off. Enabling charging.")
-                self.charge_now_switch.set_state(state="on",
-                                                 attributes={"reason": "Smart charging disabled"})
-            return
+            return self.not_smart_charging()
 
-        # Assume that we will be running on 80 % of the full charging power.
         current_soc = float(self.state_of_charge_entity.state)
         if current_soc >= self.target_state_of_charge:
-            self.log(f"Current state of charge ({current_soc}) is already above {self.target_state_of_charge}.")
-            return
+            return self.target_reached(current_soc)
+
+        # Assume that we will be running on 80 % of the full charging power.
         num_hours_to_charge = self.get_min_hours_to_charge(current_soc, self.target_state_of_charge) / 0.8
         self.log(f"Number of hours to charge from {current_soc} to {self.target_state_of_charge} %: {num_hours_to_charge}")
 
@@ -134,7 +130,39 @@ class Scheduler(Hass):
         currency = str(self.price_entity.attributes.get("currency"))
         self.log(f"Estimated cost: {estimated_cost:.2f} {currency}")
 
+        if len(contiguous_slots) == 0:
+            # We didn't get any slots - there isn't enough time until anticipated departure to charge to the desired
+            # state of charge. Just enable charging.
+            return self.not_enough_time(num_hours_to_charge)
+
         # Charge when in time slot.
+        self.charge_in_time_slot(contiguous_slots)
+
+    def target_reached(self, current_soc):
+        self.log(f"Current state of charge ({current_soc}) is already above {self.target_state_of_charge}.")
+        return
+
+    def not_smart_charging(self):
+        if self.charge_now_switch.get_state() == "off":
+            self.log("Smart charging disabled, but charging is off. Enabling charging.")
+            self.charge_now_switch.set_state(state="on",
+                                             attributes={"reason": "Smart charging disabled"})
+        return
+
+    def not_enough_time(self, num_hours_to_charge):
+        """Starts charging when there is not enough time to charge to the desired state of charge."""
+        eta = self.get_now() + timedelta(hours=num_hours_to_charge)
+        if self.charge_now_switch.state == "off":
+            self.log(f"Not enough time to charge to {self.target_state_of_charge} %, but charging is off. "
+                     "Enabling charging. ETA: {eta}")
+        # Always set the state, including reason.
+        self.log(f"Not enough time to charge to {self.target_state_of_charge} %. ETA: {eta}")
+        self.charge_now_switch.set_state(state="on", attributes={"reason": "Not enough time to charge", "eta": eta},
+                                         replace=True)
+        return
+
+    def charge_in_time_slot(self, contiguous_slots):
+        """Starts charging when in a scheduled charging time slot."""
         if self.in_time_slot(self.get_now(), start=contiguous_slots[0]['start'], end=contiguous_slots[0]['end']):
             target_state = "on"
             if self.charge_now_switch.state == "off":
@@ -147,9 +175,9 @@ class Scheduler(Hass):
                 self.log("Disabling charging because of schedule.")
             else:
                 self.log("Charging is already disabled.", level="DEBUG")
-        # Set state, including schedule attribute (which may have changed even if charge-now didn't).
-        # self.charge_now_switch.set_state(state=target_state, attributes={"reason": f"scheduled {target_state}",
-        #                                                                  "schedule": contiguous_slots})
+        # Set state, including reason and schedule attributes (which may have changed even if charge-now didn't).
+        self.charge_now_switch.set_state(state=target_state, attributes={"reason": f"scheduled {target_state}",
+                                                                         "schedule": contiguous_slots})
 
     def get_min_hours_to_charge(self, current_soc, target_soc=100):
         """Get the minimum number of hours that the car needs to be charged, i.e. at max charging power."""
