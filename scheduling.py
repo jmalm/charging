@@ -62,22 +62,22 @@ class Scheduler(Hass):
         self.log(f"Scheduling next at {next_occurrence}")
         self.run_every(self.scheduler_cb, next_occurrence, 30 * 60)
 
-        self.schedule()
+        self.handle_current_state()
 
     def charger_status_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the charger status sensor."""
-        self.schedule()
+        self.handle_current_state()
 
     def departure_time_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the departure time sensor."""
         self.set_departure_time(self.parse_datetime(new, aware=True))
-        self.schedule()
+        self.handle_current_state()
 
     def smart_charging_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the smart charging switch."""
         self.smart_charge = new == 'on'
         self.log(f"Smart charging: {new}")
-        self.schedule()
+        self.handle_current_state()
 
     def state_of_charge_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the state of charge sensor."""
@@ -87,12 +87,12 @@ class Scheduler(Hass):
     def scheduler_cb(self, *args, **kwargs):
         """Callback for the scheduler."""
         self.log(f"Scheduler callback called.")
-        self.schedule()
+        self.handle_current_state()
 
     def last_known_state_of_charge_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the last known state of charge sensor."""
         self.log(f"Last known state of charge: {new} %")
-        self.schedule()
+        self.handle_current_state()
 
     def set_departure_time(self, time: datetime):
         """Set the departure time."""
@@ -107,7 +107,7 @@ class Scheduler(Hass):
             self.log(f"Departure time: {time} is in the past. Setting to 07:00.")
         self.departure_time = departure_time
 
-    def schedule(self):
+    def handle_current_state(self):
         """Schedule charging."""
         if not self.smart_charge:
             return self.not_smart_charging()
@@ -120,6 +120,18 @@ class Scheduler(Hass):
         num_hours_to_charge = self.get_min_hours_to_charge(current_soc, self.target_state_of_charge) / 0.8
         self.log(f"Number of hours to charge from {current_soc} to {self.target_state_of_charge} %: {num_hours_to_charge}")
 
+        charging_slots = self.create_schedule(num_hours_to_charge)
+
+        if len(charging_slots) == 0:
+            # We didn't get any slots - there isn't enough time until anticipated departure to charge to the desired
+            # state of charge. Just enable charging.
+            return self.not_enough_time(num_hours_to_charge)
+
+
+        # Charge when in time slot.
+        self.charge_in_time_slot(charging_slots)
+
+    def create_schedule(self, num_hours_to_charge):
         hourly_prices = self.get_prices()
         available_hours = [h for h in hourly_prices if self.in_time_slot(h['start']) or self.in_time_slot(h['end'])]
         sorted_hourly_prices = sorted(available_hours, key=lambda x: x['value'])
@@ -129,18 +141,18 @@ class Scheduler(Hass):
         estimated_cost = sum([h['value'] for h in hours_to_charge])
         currency = str(self.price_entity.attributes.get("currency"))
         self.log(f"Estimated cost: {estimated_cost:.2f} {currency}")
-
-        if len(contiguous_slots) == 0:
-            # We didn't get any slots - there isn't enough time until anticipated departure to charge to the desired
-            # state of charge. Just enable charging.
-            return self.not_enough_time(num_hours_to_charge)
-
-        # Charge when in time slot.
-        self.charge_in_time_slot(contiguous_slots)
+        return contiguous_slots
 
     def target_reached(self, current_soc):
-        self.log(f"Current state of charge ({current_soc}) is already above {self.target_state_of_charge}.")
-        return
+        if self.target_state_of_charge >= 100:
+            # The target state of charge is 100 %. Just leave the charging on.
+            self.log(f"Target state of charge is 100 %. Leaving charging on.")
+            return
+        self.log(f"Current state of charge ({current_soc}) is above {self.target_state_of_charge}.")
+        if self.charge_now_switch.state == "on":
+            self.log("Charging is on. Disabling charging.")
+            reason = f"Target state of charge {self.target_state_of_charge} reached"
+            self.charge_now_switch.set_state(state="off", attributes={"reason": reason}, replace=True)
 
     def not_smart_charging(self):
         if self.charge_now_switch.get_state() == "off":
