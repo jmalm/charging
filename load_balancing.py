@@ -112,6 +112,7 @@ class LoadBalancer(hass.Hass):
         l2 = float(self.current_l2_entity.state)
         l3 = float(self.current_l3_entity.state)
         load = Currents(l1, l2, l3)
+        above_threshold = load.max() > self.load_balance_threshold
 
         if l1 > self.charger.main_fuse:
             self.log(f"L1 current is higher than main fuse: {l1}", level="WARNING")
@@ -125,10 +126,6 @@ class LoadBalancer(hass.Hass):
         if not self.load_balancing_enabled:
             self.log(f"Load balancing is disabled.", level="DEBUG")
             return
-
-        above_threshold = (l1 > self.load_balance_threshold or
-                           l2 > self.load_balance_threshold or
-                           l3 > self.load_balance_threshold)
 
         # Get the circuit dynamic limit for each phase.
         circuit_dynamic_limit = self.charger.circuit_dynamic_limit
@@ -152,19 +149,19 @@ class LoadBalancer(hass.Hass):
             return
 
         if self.one_phase_charging:
-            self.balance_one_phase(l1, l2, l3, self.charger.current)
+            self.balance_one_phase(load, self.charger.current)
         else:
             # TODO: Not sure what self.charger_current is when doing three-phase charging.
             self.balance_three_phase(l1, l2, l3, self.charger.current)
 
-    def balance_one_phase(self, l1, l2, l3, charger_current):
+    def balance_one_phase(self, load, charger_current):
         """Balance the load when the charger is set to only charge on one phase."""
-        charging_phase = self.get_charging_phase(l1, l2, l3)
+        charging_phase = self.get_charging_phase()
         if charger_current >= self.min_charging_current:
             self.log(f"Charging with {charger_current} A on phase {charging_phase.name}", level="INFO")
 
         # Figure out the load on each phase, without the charger.
-        other_load = Currents(l1, l2, l3)
+        other_load = Currents(load.p1, load.p2, load.p3)
         if charging_phase != Phase.Unknown:
             other_load[charging_phase] -= charger_current
         self.log(f"Other load: {other_load}", level="DEBUG")
@@ -198,7 +195,7 @@ class LoadBalancer(hass.Hass):
         """Balance the load when the charger is set to charge on all three phases."""
         raise NotImplementedError("Three-phase load balancing not yet implemented.")
 
-    def get_charging_phase(self, l1, l2, l3):
+    def get_charging_phase(self):
         """Get the phase that charging is enabled on."""
         # Do we have a specific phase enabled by circuit dynamic limit?
         current_limit = self.charger.circuit_dynamic_limit
@@ -206,22 +203,11 @@ class LoadBalancer(hass.Hass):
             # Charging is enabled on one specific phase.
             return current_limit.max_phase()
 
-        # We don't know yet. Let's guess based on current readings.
-        # If the charger is charging a vehicle, let's assume it is charging on the phase with the highest load.
-
         if not self.charge_now:
             # The charger is not charging a vehicle. We can't guess the charging phase.
             return Phase.Unknown
 
-        # if l1 > l2 and l1 > l3:
-        #     # L1 is the highest current.
-        #     return Phase.P1
-        # elif l2 > l1 and l2 > l3:
-        #     # L2 is the highest current.
-        #     return Phase.P2
-        # elif l3 > l1 and l3 > l2:
-        #     # L3 is the highest current.
-        #     return Phase.P3
+        # TODO: Get it from the attributes of circuit_current_entity.
 
         return Phase.Unknown
 

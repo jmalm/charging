@@ -12,7 +12,7 @@ class Phase(Enum):
 class Currents:
     """Represents the currents on each phase"""
 
-    def __init__(self, p1, p2, p3):
+    def __init__(self, p1: float, p2: float, p3: float):
         self._currents = {
             Phase.P1: p1,
             Phase.P2: p2,
