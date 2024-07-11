@@ -136,9 +136,15 @@ class Scheduler(Hass):
         hours_to_charge = sorted_hourly_prices[:ceil(num_hours_to_charge)]
         contiguous_slots = self.get_contiguous_slots([{'start': h['start'], 'end': h['end']} for h in hours_to_charge])
         self.log(f"Charging plan:\n{contiguous_slots}")
-        estimated_cost = sum([h['value'] for h in hours_to_charge])
-        currency = str(self.price_entity.attributes.get("currency"))
-        self.log(f"Estimated cost: {estimated_cost:.2f} {currency}")
+
+        # TODO: The following is completely wrong.
+        #       1. We have to multiply with the expected power (80 % of full charging power, according to how we
+        #       calculate the number of hours to charge).
+        #       2. The first and last hours will not be full hours.
+        # estimated_cost = sum([h['value'] for h in hours_to_charge])
+        # currency = str(self.price_entity.attributes.get("currency"))
+        # self.log(f"Estimated cost: {estimated_cost:.2f} {currency}")
+
         return contiguous_slots
 
     def target_reached(self, current_soc):
