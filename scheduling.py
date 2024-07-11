@@ -127,13 +127,11 @@ class Scheduler(Hass):
             # state of charge. Just enable charging.
             return self.not_enough_time(num_hours_to_charge)
 
-
         # Charge when in time slot.
         self.charge_in_time_slot(charging_slots)
 
     def create_schedule(self, num_hours_to_charge):
-        hourly_prices = self.get_prices()
-        available_hours = [h for h in hourly_prices if self.in_time_slot(h['start']) or self.in_time_slot(h['end'])]
+        available_hours = self.get_prices(self.get_now(), self.departure_time)
         sorted_hourly_prices = sorted(available_hours, key=lambda x: x['value'])
         hours_to_charge = sorted_hourly_prices[:ceil(num_hours_to_charge)]
         contiguous_slots = self.get_contiguous_slots([{'start': h['start'], 'end': h['end']} for h in hours_to_charge])
@@ -200,24 +198,36 @@ class Scheduler(Hass):
         hours_to_charge = kwh_to_charge / max_power_kw
         return hours_to_charge
 
-    def get_prices(self):
+    def get_prices(self, start: datetime, end: datetime):
         tomorrow = self.price_entity.attributes.get("raw_tomorrow", [])
         today = self.price_entity.attributes.get("raw_today", [])
-        # currency = str(self.price_entity.attributes.get("currency"))
         hourly_prices = []
         for i in today + tomorrow:
             hourly_prices.append({
                 'start': parser.parse(i['start']),
                 'end': parser.parse(i['end']),
                 'value': i['value']})
-        return hourly_prices
+
+        # Fill missing hours with prices from the previous day.
+        last_hour = hourly_prices[-1]
+        while last_hour['end'] < end:
+            last_hour = {
+                'start': last_hour['end'],
+                'end': last_hour['end'] + timedelta(hours=1),
+                'value': hourly_prices[-24]['value']
+            }
+            hourly_prices.append(last_hour)
+
+        return [h for h in hourly_prices if
+                self.in_time_slot(h['start'], start, end) or
+                self.in_time_slot(h['end'], start, end)]
 
     def in_time_slot(self, time: datetime, start: datetime = None, end: datetime = None):
         if start is None:
             start = self.get_now()
         if end is None:
             end = self.departure_time
-        return start < time < end
+        return start <= time <= end
 
     def get_contiguous_slots(self, slots: list[dict[str, datetime]]) -> list[dict[str, datetime]]:
         """Get the contiguous slots of the given prices."""
