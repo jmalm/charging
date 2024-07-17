@@ -158,7 +158,7 @@ class LoadBalancer(hass.Hass):
         """Balance the load when the charger is set to only charge on one phase."""
         charging_phase = self.get_charging_phase()
         if charger_current >= self.min_charging_current:
-            self.log(f"Charging with {charger_current} A on phase {charging_phase.name}", level="INFO")
+            self.log(f"Charging with {charger_current} A on phase {charging_phase.name}", level="DEBUG")
 
         # Figure out the load on each phase, without the charger.
         other_load = Currents(load.p1, load.p2, load.p3)
