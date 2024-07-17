@@ -199,7 +199,7 @@ class LoadBalancer(hass.Hass):
         """Get the phase that charging is enabled on."""
         # Do we have a specific phase enabled by circuit dynamic limit?
         current_limit = self.charger.circuit_dynamic_limit
-        if self.min_charging_current < current_limit.max() == current_limit.p1 + current_limit.p2 + current_limit.p3:
+        if self.min_charging_current <= current_limit.max() == current_limit.p1 + current_limit.p2 + current_limit.p3:
             # Charging is enabled on one specific phase.
             return current_limit.max_phase()
 

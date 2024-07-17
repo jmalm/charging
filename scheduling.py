@@ -112,6 +112,8 @@ class Scheduler(Hass):
         if not self.smart_charge:
             return self.not_smart_charging()
 
+        # TODO: If not connected, we should not charge.
+
         current_soc = float(self.state_of_charge_entity.state)
         if current_soc >= self.target_state_of_charge:
             return self.target_reached(current_soc)
