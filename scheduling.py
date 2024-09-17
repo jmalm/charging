@@ -20,6 +20,7 @@ class Scheduler(Hass):
     price_entity = None
     car_battery_size_kwh = 64
     target_state_of_charge = 100
+    reschedule_on_next_state_of_charge_change = False
 
     def initialize(self):
         # Charger and home
@@ -83,6 +84,9 @@ class Scheduler(Hass):
         """Callback for the state of charge sensor."""
         self.log(f"State of charge: {new} %")
         # TODO: Should we reschedule? Maybe if the state of charge has changed significantly?
+        if self.reschedule_on_next_state_of_charge_change:
+            self.reschedule_on_next_state_of_charge_change = False
+            self.handle_current_state()
 
     def scheduler_cb(self, *args, **kwargs):
         """Callback for the scheduler."""
@@ -92,6 +96,9 @@ class Scheduler(Hass):
     def last_known_state_of_charge_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the last known state of charge sensor."""
         self.log(f"Last known state of charge: {new} %")
+        # The state_of_charge_entity may not yet have been updated, if it is a calculated entity, based on
+        # last_known_state_of_charge_entity.
+        self.reschedule_on_next_state_of_charge_change = True
         self.handle_current_state()
 
     def set_departure_time(self, time: datetime):
