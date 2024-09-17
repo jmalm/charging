@@ -21,6 +21,8 @@ class LoadBalancer(hass.Hass):
     current_l2_entity = None
     current_l3_entity = None
     circuit_dynamic_limit_target: Currents | None = None
+    circuit_dynamic_limit_target_timeout = 120  # seconds
+    reset_circuit_dynamic_limit_target_timer: str | None = None
 
     def initialize(self):
         # Should we do load balancing?
@@ -125,7 +127,7 @@ class LoadBalancer(hass.Hass):
 
         if not self.load_balancing_enabled:
             self.log(f"Load balancing is disabled.", level="DEBUG")
-            return
+            return  # Nothing more to do when load balancing is disabled.
 
         # Get the circuit dynamic limit for each phase.
         circuit_dynamic_limit = self.charger.circuit_dynamic_limit
@@ -223,6 +225,18 @@ class LoadBalancer(hass.Hass):
                           currentP3=currents.p3)
         self.circuit_dynamic_limit_target = currents
 
+        # Set a timer to reset the circuit dynamic limit target if we don't reach within reasonable time.
+        self.reset_circuit_dynamic_limit_target_timer = self.run_in(self.reset_circuit_dynamic_limit_target_cb,
+                                                                    self.circuit_dynamic_limit_target_timeout)
+
+    def reset_circuit_dynamic_limit_target_cb(self, _):
+        """Reset the circuit dynamic limit target."""
+        if self.circuit_dynamic_limit_target_reached():
+            return
+        self.log(f"Circuit dynamic limit target was not reached within {self.circuit_dynamic_limit_target_timeout} seconds.",
+                 level="INFO")
+        self.circuit_dynamic_limit_target = None
+
     def circuit_dynamic_limit_target_reached(self) -> bool:
         """Check if the circuit dynamic limit target is reached."""
         if self.circuit_dynamic_limit_target is None:
@@ -235,6 +249,7 @@ class LoadBalancer(hass.Hass):
             self.log(f"Circuit dynamic limit is now set to {self.circuit_dynamic_limit_target}.",
                      level="INFO")
             self.circuit_dynamic_limit_target = None
+            self.cancel_timer(self.reset_circuit_dynamic_limit_target_timer)
             return True
         self.log(f"Circuit dynamic limit is being set to {self.circuit_dynamic_limit_target}.",
                  level="DEBUG")
