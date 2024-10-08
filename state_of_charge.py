@@ -10,14 +10,17 @@ class StateOfChargeCalculator(hass.Hass):
         self.charger_energy_entity_id = str(self.args['charger_energy_entity_id'])
         self.last_known_state_of_charge_entity_id = str(self.args['last_known_state_of_charge_entity_id'])
         self.estimated_state_of_charge_entity_id = str(self.args['estimated_state_of_charge_entity_id'])
+        self.car_soc_d_entity_id = str(self.args['car_soc_d_entity_id'])
 
         self.charger_energy_entity = self.get_entity(self.charger_energy_entity_id)
         self.last_known_state_of_charge_entity = self.get_entity(self.last_known_state_of_charge_entity_id)
         self.estimated_state_of_charge_entity = self.get_entity(self.estimated_state_of_charge_entity_id)
+        self.car_soc_d_entity = self.get_entity(self.car_soc_d_entity_id)
 
         # Register callbacks
         self.listen_state(self.estimate, self.charger_energy_entity_id)
         self.listen_state(self.estimate, self.last_known_state_of_charge_entity_id)
+        self.listen_state(self.update_last_known_state_of_charge, self.car_soc_d_entity_id)
 
         # Do the calculation (mainly for development purposes)
         self.estimate(None, None, None, None, None)
@@ -61,3 +64,7 @@ class StateOfChargeCalculator(hass.Hass):
         latest_state = float(energy_history[-1]['state'])
         energy_consumed = latest_state - earliest_state_after_time
         return energy_consumed
+
+    def update_last_known_state_of_charge(self, entity, attribute, old, new, kwargs):
+        self.log(f"Updating last known state of charge to {new}")
+        self.last_known_state_of_charge_entity.set_state(state=new)
