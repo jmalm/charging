@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from math import ceil
+from typing import Any
 
 from dateutil import parser
 
@@ -109,7 +110,7 @@ class Scheduler(Hass):
             self.log(f"Departure time: {departure_time}")
         else:
             departure_time = datetime(now.year, now.month, now.day, 7, tzinfo=now.tzinfo)
-            if now.hour > 7:
+            if now > departure_time:
                 departure_time = departure_time + timedelta(days=1)
             self.log(f"Departure time: {time} is in the past. Setting to 07:00.")
         self.departure_time = departure_time
@@ -129,32 +130,15 @@ class Scheduler(Hass):
         num_hours_to_charge = self.get_min_hours_to_charge(current_soc, self.target_state_of_charge) / 0.8
         self.log(f"Number of hours to charge from {current_soc} to {self.target_state_of_charge} %: {num_hours_to_charge}")
 
-        charging_slots = self.create_schedule(num_hours_to_charge)
-
-        if len(charging_slots) == 0:
-            # We didn't get any slots - there isn't enough time until anticipated departure to charge to the desired
-            # state of charge. Just enable charging.
+        available_periods = self.get_prices(self.get_now(), self.departure_time)
+        try:
+            charging_slots = create_schedule(available_periods, num_hours_to_charge)
+        except NotEnoughTimeException:
             return self.not_enough_time(num_hours_to_charge)
+        self.log(f"Charging plan:\n{charging_slots}")
 
         # Charge when in time slot.
         self.charge_in_time_slot(charging_slots)
-
-    def create_schedule(self, num_hours_to_charge):
-        available_hours = self.get_prices(self.get_now(), self.departure_time)
-        sorted_hourly_prices = sorted(available_hours, key=lambda x: x['value'])
-        hours_to_charge = sorted_hourly_prices[:ceil(num_hours_to_charge)]
-        contiguous_slots = self.get_contiguous_slots([{'start': h['start'], 'end': h['end']} for h in hours_to_charge])
-        self.log(f"Charging plan:\n{contiguous_slots}")
-
-        # TODO: The following is completely wrong.
-        #       1. We have to multiply with the expected power (80 % of full charging power, according to how we
-        #       calculate the number of hours to charge).
-        #       2. The first and last hours will not be full hours.
-        # estimated_cost = sum([h['value'] for h in hours_to_charge])
-        # currency = str(self.price_entity.attributes.get("currency"))
-        # self.log(f"Estimated cost: {estimated_cost:.2f} {currency}")
-
-        return contiguous_slots
 
     def target_reached(self, current_soc):
         if self.target_state_of_charge >= 100:
@@ -172,23 +156,21 @@ class Scheduler(Hass):
             self.log("Smart charging disabled, but charging is off. Enabling charging.")
             self.charge_now_switch.set_state(state="on",
                                              attributes={"reason": "Smart charging disabled"})
-        return
 
     def not_enough_time(self, num_hours_to_charge):
         """Starts charging when there is not enough time to charge to the desired state of charge."""
         eta = self.get_now() + timedelta(hours=num_hours_to_charge)
         if self.charge_now_switch.state == "off":
             self.log(f"Not enough time to charge to {self.target_state_of_charge} %, but charging is off. "
-                     "Enabling charging. ETA: {eta}")
+                     f"Enabling charging. ETA: {eta}")
         # Always set the state, including reason.
         self.log(f"Not enough time to charge to {self.target_state_of_charge} %. ETA: {eta}")
         self.charge_now_switch.set_state(state="on", attributes={"reason": "Not enough time to charge", "eta": eta},
                                          replace=True)
-        return
 
     def charge_in_time_slot(self, contiguous_slots):
         """Starts charging when in a scheduled charging time slot."""
-        if self.in_time_slot(self.get_now(), start=contiguous_slots[0]['start'], end=contiguous_slots[0]['end']):
+        if in_time_slot(self.get_now(), start=contiguous_slots[0]['start'], end=contiguous_slots[0]['end']):
             target_state = "on"
             if self.charge_now_switch.state == "off":
                 self.log("Enabling charging because of schedule.")
@@ -216,46 +198,70 @@ class Scheduler(Hass):
     def get_prices(self, start: datetime, end: datetime):
         tomorrow = self.price_entity.attributes.get("raw_tomorrow", [])
         today = self.price_entity.attributes.get("raw_today", [])
-        hourly_prices = []
-        for i in today + tomorrow:
-            hourly_prices.append({
-                'start': parser.parse(i['start']),
-                'end': parser.parse(i['end']),
-                'value': i['value']})
+        return get_prices(parse_prices(today + tomorrow), start, end)
 
-        # Fill missing hours with prices from the previous day.
-        last_hour = hourly_prices[-1]
-        while last_hour['end'] < end:
-            last_hour = {
-                'start': last_hour['end'],
-                'end': last_hour['end'] + timedelta(hours=1),
-                'value': hourly_prices[-24]['value']
-            }
-            hourly_prices.append(last_hour)
 
-        return [h for h in hourly_prices if
-                self.in_time_slot(h['start'], start, end) or
-                self.in_time_slot(h['end'], start, end)]
+def create_schedule(available_periods: list[dict[str, datetime]], num_hours_to_charge: float) -> list[dict[str, datetime]]:
+    needed_time = num_hours_to_charge * timedelta(hours=1)
+    if len(available_periods) == 0:
+        raise NotEnoughTimeException(needed_time, timedelta(hours=0))
+    periods_by_price = sorted(available_periods, key=lambda x: x['value'])
+    period = available_periods[0]['end'] - available_periods[0]['start']
+    available_time = period * len(available_periods)
+    num_periods_to_charge = ceil(num_hours_to_charge * timedelta(hours=1) / period)
+    if num_periods_to_charge > len(periods_by_price):
+        raise NotEnoughTimeException(needed_time, available_time)
+    periods_to_charge = periods_by_price[:num_periods_to_charge]
+    contiguous_slots = get_contiguous_slots([{'start': h['start'], 'end': h['end']} for h in periods_to_charge])
 
-    def in_time_slot(self, time: datetime, start: datetime = None, end: datetime = None):
-        if start is None:
-            start = self.get_now()
-        if end is None:
-            end = self.departure_time
-        return start <= time <= end
+    # TODO: The following is completely wrong.
+    #       1. We have to multiply with the expected power (80 % of full charging power, according to how we
+    #       calculate the number of hours to charge).
+    #       2. The first and last hours will not be full hours.
+    # estimated_cost = sum([h['value'] for h in hours_to_charge])
+    # currency = str(self.price_entity.attributes.get("currency"))
+    # self.log(f"Estimated cost: {estimated_cost:.2f} {currency}")
 
-    def get_contiguous_slots(self, slots: list[dict[str, datetime]]) -> list[dict[str, datetime]]:
-        """Get the contiguous slots of the given prices."""
-        sorted_slots = sorted(slots, key=lambda x: x['start'])
-        contiguous_slots = []
-        for slot in sorted_slots:
-            if len(contiguous_slots) == 0:
-                contiguous_slots.append(slot)
-            elif contiguous_slots[-1]['end'] == slot['start']:
-                contiguous_slots[-1]['end'] = slot['end']
-            else:
-                contiguous_slots.append(slot)
-        return contiguous_slots
+    return contiguous_slots
+
+
+class NotEnoughTimeException(Exception):
+    def __init__(self, needed_time: timedelta, available_time: timedelta):
+        self.needed_time = needed_time
+        self.available_time = available_time
+
+
+def parse_prices(prices: list[dict]) -> list[dict]:
+    return [{
+            'start': parser.parse(p['start']),
+            'end': parser.parse(p['end']),
+            'value': float(p['value'])
+        } for p in prices]
+
+
+def get_prices(known_prices, start, end):
+    prices = extrapolate_prices(known_prices, end)
+    return [h for h in prices if
+            (start <= h['start'] < end) or
+            (start < h['end'] <= end)]
+
+
+def in_time_slot(time: datetime, start: datetime, end: datetime):
+    return start <= time < end
+
+
+def get_contiguous_slots(slots: list[dict[str, datetime]]) -> list[dict[str, datetime]]:
+    """Get the contiguous slots of the given prices."""
+    sorted_slots = sorted(slots, key=lambda x: x['start'])
+    contiguous_slots = []
+    for slot in sorted_slots:
+        if len(contiguous_slots) == 0:
+            contiguous_slots.append(slot)
+        elif contiguous_slots[-1]['end'] == slot['start']:
+            contiguous_slots[-1]['end'] = slot['end']
+        else:
+            contiguous_slots.append(slot)
+    return contiguous_slots
 
 
 def round_datetime_up(
@@ -277,3 +283,32 @@ def round_datetime_up(
     """
     rounded = ts + (datetime.min.replace(tzinfo=ts.tzinfo) - ts) % delta
     return rounded + offset
+
+
+def extrapolate_prices(prices: list[dict[str, Any]], end: datetime) -> list[dict[str, Any]]:
+    """
+    Fill missing periods at the end of *prices*, assuming that prices
+    will be the same as the same period the preceding day.
+    """
+    filled = [p for p in prices]
+    existing_end = filled[-1]['end']
+
+    # Find corresponding period the day before.
+    # Assume that all periods have the same duration.
+    previous_day_periods = (f for f in filled if f['start'] >= existing_end - timedelta(days=1))
+
+    # Fill missing periods.
+    while filled[-1]['end'] < end:
+        previous_day_period = next(previous_day_periods)
+        period = {
+            'start': previous_day_period['start'] + timedelta(days=1),
+            'end': previous_day_period['end'] + timedelta(days=1),
+            'value': previous_day_period['value']
+        }
+        filled.append(period)
+
+    # Make sure the last period ends at the requested end time.
+    if filled[-1]['start'] < end < filled[-1]['end']:
+        filled[-1]['end'] = end
+
+    return filled
