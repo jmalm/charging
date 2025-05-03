@@ -13,7 +13,7 @@ from charger import Charger
 
 
 class Scheduler(Hass):
-    charger = None
+    charger: Charger = None
     smart_charge = False
     charge_now_switch = None
     state_of_charge_entity = 0
@@ -23,89 +23,89 @@ class Scheduler(Hass):
     target_state_of_charge = 100
     reschedule_on_next_state_of_charge_change = False
 
-    def initialize(self):
+    async def initialize(self):
         # Charger and home
         charger_status_entity_id = str(self.args['charger_status_entity_id'])
         self.charger = Charger(self.get_entity(charger_status_entity_id), None, None)
-        self.listen_state(self.charger_status_cb, charger_status_entity_id)
+        await self.listen_state(self.charger_status_cb, charger_status_entity_id)
 
         # Shall we do smart charging?
         smart_charging_entity_id = str(self.args['smart_charging_entity_id'])
-        self.smart_charge = self.get_state(smart_charging_entity_id) == 'on'
-        self.listen_state(self.smart_charging_cb, smart_charging_entity_id)
+        self.smart_charge = await self.get_state(smart_charging_entity_id) == 'on'
+        await self.listen_state(self.smart_charging_cb, smart_charging_entity_id)
 
         # The charge-now entity is the one we will use to control charging.
         charge_now_entity_id = str(self.args['charge_now_entity_id'])
         self.charge_now_switch = self.get_entity(charge_now_entity_id)
 
-        # Current state of charge is used to decide how much the car needs to charge.
+        # The current state of charge is used to decide how much the car needs to charge.
         state_of_charge_entity_id = str(self.args['state_of_charge_entity_id'])
         self.state_of_charge_entity = self.get_entity(state_of_charge_entity_id)
-        self.listen_state(self.state_of_charge_cb, state_of_charge_entity_id)
+        await self.listen_state(self.state_of_charge_cb, state_of_charge_entity_id)
 
-        # When last known state of charge is updated by the user, we will reschedule.
+        # When the last known state of charge is updated by the user, we will reschedule.
         last_known_state_of_charge_entity_id = str(self.args['last_known_state_of_charge_entity_id'])
-        self.listen_state(self.last_known_state_of_charge_cb, last_known_state_of_charge_entity_id)
+        await self.listen_state(self.last_known_state_of_charge_cb, last_known_state_of_charge_entity_id)
 
         # When should charging be done?
         departure_time_entity_id = str(self.args['departure_time_entity_id'])
         departure_time_entity = self.get_entity(departure_time_entity_id)
-        departure_time = self.parse_datetime(departure_time_entity.state, aware=True)
-        self.set_departure_time(departure_time)
-        self.listen_state(self.departure_time_cb, departure_time_entity_id)
+        departure_time = await self.parse_datetime(departure_time_entity.state, aware=True)
+        await self.set_departure_time(departure_time)
+        await self.listen_state(self.departure_time_cb, departure_time_entity_id)
 
         # Electricity price
         price_entity_id = str(self.args['price_entity_id'])
         self.price_entity = self.get_entity(price_entity_id)
 
         # Run scheduling every half hour + 1 minute.
-        next_occurrence = round_datetime_up(self.get_now(), timedelta(minutes=30), timedelta(minutes=1))
+        next_occurrence = round_datetime_up(await self.get_now(), timedelta(minutes=30), timedelta(minutes=1))
         # next_occurrence = datetime.now() + timedelta(minutes=1)
         self.log(f"Scheduling next at {next_occurrence}")
-        self.run_every(self.scheduler_cb, next_occurrence, 30 * 60)
+        await self.run_every(self.scheduler_cb, next_occurrence, 30 * 60)
 
-        self.handle_current_state()
+        await self.handle_current_state()
 
-    def charger_status_cb(self, entity, attribute, old, new, kwargs):
+    async def charger_status_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the charger status sensor."""
-        self.handle_current_state()
+        await self.handle_current_state()
 
-    def departure_time_cb(self, entity, attribute, old, new, kwargs):
+    async def departure_time_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the departure time sensor."""
-        self.set_departure_time(self.parse_datetime(new, aware=True))
-        self.handle_current_state()
+        await self.set_departure_time(await self.parse_datetime(new, aware=True))
+        await self.handle_current_state()
 
-    def smart_charging_cb(self, entity, attribute, old, new, kwargs):
+    async def smart_charging_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the smart charging switch."""
         self.smart_charge = new == 'on'
         self.log(f"Smart charging: {new}")
-        self.handle_current_state()
+        await self.handle_current_state()
 
-    def state_of_charge_cb(self, entity, attribute, old, new, kwargs):
+    async def state_of_charge_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the state of charge sensor."""
         self.log(f"State of charge: {new} %")
         # TODO: Should we reschedule? Maybe if the state of charge has changed significantly?
         if self.reschedule_on_next_state_of_charge_change:
             self.reschedule_on_next_state_of_charge_change = False
-            self.handle_current_state()
+            await self.handle_current_state()
 
-    def scheduler_cb(self, *args, **kwargs):
+    async def scheduler_cb(self, *args, **kwargs):
         """Callback for the scheduler."""
         self.log(f"Scheduler callback called.")
-        self.handle_current_state()
+        await self.handle_current_state()
 
-    def last_known_state_of_charge_cb(self, entity, attribute, old, new, kwargs):
+    async def last_known_state_of_charge_cb(self, entity, attribute, old, new, kwargs):
         """Callback for the last known state of charge sensor."""
         self.log(f"Last known state of charge: {new} %")
         # The state_of_charge_entity may not yet have been updated, if it is a calculated entity, based on
         # last_known_state_of_charge_entity.
         self.reschedule_on_next_state_of_charge_change = True
-        self.handle_current_state()
+        await self.handle_current_state()
 
-    def set_departure_time(self, time: datetime):
+    async def set_departure_time(self, time: datetime):
         """Set the departure time."""
         departure_time = datetime(time.year, time.month, time.day, time.hour, time.minute, tzinfo=time.tzinfo)
-        now = self.get_now()
+        now = await self.get_now()
         if departure_time > now:
             self.log(f"Departure time: {departure_time}")
         else:
@@ -115,32 +115,34 @@ class Scheduler(Hass):
             self.log(f"Departure time: {time} is in the past. Setting to 07:00.")
         self.departure_time = departure_time
 
-    def handle_current_state(self):
+    async def handle_current_state(self):
         """Schedule charging."""
         if not self.smart_charge:
-            return self.not_smart_charging()
+            await self.not_smart_charging()
+            return
 
         # TODO: If not connected, we should not charge.
 
         current_soc = float(self.state_of_charge_entity.state)
         if current_soc >= self.target_state_of_charge:
-            return self.target_reached(current_soc)
+            await self.target_reached(current_soc)
 
         # Assume that we will be running on 80 % of the full charging power.
         num_hours_to_charge = self.get_min_hours_to_charge(current_soc, self.target_state_of_charge) / 0.8
         self.log(f"Number of hours to charge from {current_soc} to {self.target_state_of_charge} %: {num_hours_to_charge}")
 
-        available_periods = self.get_prices(self.get_now(), self.departure_time)
+        available_periods = self.get_prices(await self.get_now(), self.departure_time)
         try:
             charging_slots = create_schedule(available_periods, num_hours_to_charge)
         except NotEnoughTimeException:
-            return self.not_enough_time(num_hours_to_charge)
+            await self.not_enough_time(num_hours_to_charge)
+            return
         self.log(f"Charging plan:\n{charging_slots}")
 
         # Charge when in time slot.
-        self.charge_in_time_slot(charging_slots)
+        await self.charge_in_time_slot(charging_slots)
 
-    def target_reached(self, current_soc):
+    async def target_reached(self, current_soc):
         if self.target_state_of_charge >= 100:
             # The target state of charge is 100 %. Just leave the charging on.
             self.log(f"Target state of charge is 100 %. Leaving charging on.")
@@ -149,28 +151,28 @@ class Scheduler(Hass):
         if self.charge_now_switch.state == "on":
             self.log("Charging is on. Disabling charging.")
             reason = f"Target state of charge {self.target_state_of_charge} reached"
-            self.charge_now_switch.set_state(state="off", attributes={"reason": reason}, replace=True)
+            await self.charge_now_switch.set_state(state="off", attributes={"reason": reason}, replace=True)
 
-    def not_smart_charging(self):
+    async def not_smart_charging(self):
         if self.charge_now_switch.get_state() == "off":
             self.log("Smart charging disabled, but charging is off. Enabling charging.")
-            self.charge_now_switch.set_state(state="on",
-                                             attributes={"reason": "Smart charging disabled"})
+            await self.charge_now_switch.set_state(state="on",
+                                                   attributes={"reason": "Smart charging disabled"})
 
-    def not_enough_time(self, num_hours_to_charge):
+    async def not_enough_time(self, num_hours_to_charge):
         """Starts charging when there is not enough time to charge to the desired state of charge."""
-        eta = self.get_now() + timedelta(hours=num_hours_to_charge)
+        eta = await self.get_now() + timedelta(hours=num_hours_to_charge)
         if self.charge_now_switch.state == "off":
             self.log(f"Not enough time to charge to {self.target_state_of_charge} %, but charging is off. "
                      f"Enabling charging. ETA: {eta}")
         # Always set the state, including reason.
         self.log(f"Not enough time to charge to {self.target_state_of_charge} %. ETA: {eta}")
-        self.charge_now_switch.set_state(state="on", attributes={"reason": "Not enough time to charge", "eta": eta},
-                                         replace=True)
+        await self.charge_now_switch.set_state(state="on", attributes={"reason": "Not enough time to charge", "eta": eta},
+                                               replace=True)
 
-    def charge_in_time_slot(self, contiguous_slots):
+    async def charge_in_time_slot(self, contiguous_slots):
         """Starts charging when in a scheduled charging time slot."""
-        if in_time_slot(self.get_now(), start=contiguous_slots[0]['start'], end=contiguous_slots[0]['end']):
+        if in_time_slot(await self.get_now(), start=contiguous_slots[0]['start'], end=contiguous_slots[0]['end']):
             target_state = "on"
             if self.charge_now_switch.state == "off":
                 self.log("Enabling charging because of schedule.")
@@ -183,8 +185,8 @@ class Scheduler(Hass):
             else:
                 self.log("Charging is already disabled.", level="DEBUG")
         # Set state, including reason and schedule attributes (which may have changed even if charge-now didn't).
-        self.charge_now_switch.set_state(state=target_state, attributes={"reason": f"scheduled {target_state}",
-                                                                         "schedule": contiguous_slots})
+        await self.charge_now_switch.set_state(state=target_state, attributes={"reason": f"scheduled {target_state}",
+                                                                               "schedule": contiguous_slots})
 
     def get_min_hours_to_charge(self, current_soc, target_soc=100):
         """Get the minimum number of hours that the car needs to be charged, i.e. at max charging power."""
@@ -293,7 +295,7 @@ def extrapolate_prices(prices: list[dict[str, Any]], end: datetime) -> list[dict
     filled = [p for p in prices]
     existing_end = filled[-1]['end']
 
-    # Find corresponding period the day before.
+    # Find the corresponding period the day before.
     # Assume that all periods have the same duration.
     previous_day_periods = (f for f in filled if f['start'] >= existing_end - timedelta(days=1))
 
