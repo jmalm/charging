@@ -3,7 +3,7 @@ import random
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from scheduling import extrapolate_prices, create_schedule, NotEnoughTimeException
+from scheduling import extrapolate_prices, create_schedule, NotEnoughTimeException, calculate_eta
 
 
 class SchedulerTests(unittest.TestCase):
@@ -103,7 +103,7 @@ class SchedulerTests(unittest.TestCase):
         ]
 
         # Act
-        schedule = create_schedule(available_periods, 1.6)
+        schedule = create_schedule(available_periods, timedelta(hours=1.6))
 
         # Assert
         self.assertSequenceEqual([
@@ -126,7 +126,7 @@ class SchedulerTests(unittest.TestCase):
         available_periods = [{'start': start, 'end': start + period, 'value': 1}]
 
         # Act & Assert
-        self.assertRaises(NotEnoughTimeException, create_schedule, available_periods, 1.6)
+        self.assertRaises(NotEnoughTimeException, create_schedule, available_periods, timedelta(hours=1.6))
 
     def test__create_schedule__advanced(self):
         import yaml
@@ -136,7 +136,7 @@ class SchedulerTests(unittest.TestCase):
         available_periods = _parse_prices(data['Raw today'] + data['Raw tomorrow'])
 
         # Act
-        schedule = create_schedule(available_periods, 5.6)
+        schedule = create_schedule(available_periods, timedelta(hours=5.6))
 
         # Assert
         total_scheduled_time = sum([period['end'] - period['start'] for period in schedule], timedelta())
@@ -147,6 +147,83 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(datetime(2025, 4, 15, 12, tzinfo=timezone(timedelta(hours=2))), schedule[1]['start'], 'Second period start')
         self.assertEqual(datetime(2025, 4, 15, 14, tzinfo=timezone(timedelta(hours=2))), schedule[1]['end'], 'Second period end')
 
+    def test__calculate_eta__no_schedule(self):
+        # Arrange
+        # schedule = [dict(start=datetime(2025, 1, 1, 0, 0), end=datetime(2025, 1, 1, 0, 15))]
+        schedule = None
+        start = datetime(2025, 1, 1, 0, 0)
+        time_to_charge = timedelta(hours=3.5)
+        expected_eta = start + time_to_charge
+
+        # Act
+        eta = calculate_eta(start, time_to_charge, schedule)
+
+        # Assert
+        self.assertEqual(expected_eta, eta, f"ETA is not the expected")
+
+    def test__calculate_eta__empty_schedule(self):
+        # Arrange
+        # schedule = [dict(start=datetime(2025, 1, 1, 0, 0), end=datetime(2025, 1, 1, 0, 15))]
+        schedule = []
+        start = datetime(2025, 1, 1, 0, 0)
+        time_to_charge = timedelta(hours=3.5)
+        expected_eta = start + time_to_charge
+
+        # Act
+        eta = calculate_eta(start, time_to_charge, schedule)
+
+        # Assert
+        self.assertEqual(expected_eta, eta, f"ETA is not the expected")
+
+    def test__calculate_eta__too_short_schedule(self):
+        # Arrange
+        schedule = [
+            dict(start=datetime(2025, 1, 1, 5, 0),
+                 end=datetime(2025, 1, 1, 6, 0))
+        ]
+        start = datetime(2025, 1, 1, 0, 0)
+        time_to_charge = timedelta(hours=3.5)
+        expected_eta = datetime(2025, 1, 1, 8, 30)
+
+        # Act
+        eta = calculate_eta(start, time_to_charge, schedule)
+
+        # Assert
+        self.assertEqual(expected_eta, eta, f"ETA is not the expected")
+
+    def test__calculate_eta__too_long_schedule(self):
+        # Arrange
+        schedule = [
+            dict(start=datetime(2025, 1, 1, 5, 0),
+                 end=datetime(2025, 1, 1, 6, 0)),
+            dict(start=datetime(2025, 1, 1, 8, 0),
+                 end=datetime(2025, 1, 1, 11, 0))
+        ]
+        start = datetime(2025, 1, 1, 0, 0)
+        time_to_charge = timedelta(hours=3.5)
+        expected_eta = datetime(2025, 1, 1, 10, 30)
+
+        # Act
+        eta = calculate_eta(start, time_to_charge, schedule)
+
+        # Assert
+        self.assertEqual(expected_eta, eta, f"ETA is not the expected")
+
+    def test__calculate_eta__too_early_and_too_long_schedule(self):
+        # Arrange
+        schedule = [
+            dict(start=datetime(2025, 1, 1, 0, 0),
+                 end=datetime(2025, 1, 1, 6, 0))
+        ]
+        start = datetime(2025, 1, 1, 1, 0)
+        time_to_charge = timedelta(hours=3.5)
+        expected_eta = datetime(2025, 1, 1, 4, 30)
+
+        # Act
+        eta = calculate_eta(start, time_to_charge, schedule)
+
+        # Assert
+        self.assertEqual(expected_eta, eta, f"ETA is not the expected")
 
 def _build_prices(start: datetime, end: datetime, period: timedelta):
     while start < end:

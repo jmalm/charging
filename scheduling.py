@@ -12,6 +12,10 @@ from appdaemon.plugins.hass.hassapi import Hass
 from charger import Charger
 
 
+# The electrical grid voltage
+VOLTAGE = 230
+
+
 class Scheduler(Hass):
     charger: Charger = None
     smart_charge = False
@@ -117,30 +121,30 @@ class Scheduler(Hass):
 
     async def handle_current_state(self):
         """Schedule charging."""
+        current_soc = float(self.state_of_charge_entity.state)
+        time_to_charge = self.estimate_time_to_charge(current_soc, self.target_state_of_charge)
+
         if not self.smart_charge:
-            await self.not_smart_charging()
+            await self.not_smart_charging(time_to_charge)
             return
 
         # TODO: If not connected, we should not charge.
 
-        current_soc = float(self.state_of_charge_entity.state)
         if current_soc >= self.target_state_of_charge:
             await self.target_reached(current_soc)
 
-        # Assume that we will be running on 80 % of the full charging power.
-        num_hours_to_charge = self.get_min_hours_to_charge(current_soc, self.target_state_of_charge) / 0.8
-        self.log(f"Number of hours to charge from {current_soc} to {self.target_state_of_charge} %: {num_hours_to_charge}")
+        self.log(f"Estimated time to charge from {current_soc} to {self.target_state_of_charge} %: {time_to_charge}")
 
         available_periods = self.get_prices(await self.get_now(), self.departure_time)
         try:
-            charging_slots = create_schedule(available_periods, num_hours_to_charge)
+            charging_slots = create_schedule(available_periods, time_to_charge)
         except NotEnoughTimeException:
-            await self.not_enough_time(num_hours_to_charge)
+            await self.not_enough_time(time_to_charge)
             return
         self.log(f"Charging plan:\n{charging_slots}")
 
         # Charge when in time slot.
-        await self.charge_in_time_slot(charging_slots)
+        await self.charge_in_time_slot(charging_slots, time_to_charge)
 
     async def target_reached(self, current_soc):
         if self.target_state_of_charge >= 100:
@@ -151,28 +155,37 @@ class Scheduler(Hass):
         if self.charge_now_switch.state == "on":
             self.log("Charging is on. Disabling charging.")
             reason = f"Target state of charge {self.target_state_of_charge} reached"
-            await self.charge_now_switch.set_state(state="off", attributes={"reason": reason}, replace=True)
+            await self.set_charge_now_switch(state="off", reason=reason)
 
-    async def not_smart_charging(self):
-        if self.charge_now_switch.get_state() == "off":
+    async def not_smart_charging(self, time_to_charge: timedelta):
+        eta = await self.get_now() + time_to_charge if time_to_charge else None
+        charging = self.charge_now_switch.get_state() == "on"
+        if charging and eta:
+            self.log(f"Updating ETA ({eta})")
+        elif not charging:
             self.log("Smart charging disabled, but charging is off. Enabling charging.")
-            await self.charge_now_switch.set_state(state="on",
-                                                   attributes={"reason": "Smart charging disabled"})
+        else:
+            return
+        await self.set_charge_now_switch(state="on",
+                                         reason="Smart charging disabled",
+                                         eta=eta)
 
-    async def not_enough_time(self, num_hours_to_charge):
+    async def not_enough_time(self, needed_time: timedelta):
         """Starts charging when there is not enough time to charge to the desired state of charge."""
-        eta = await self.get_now() + timedelta(hours=num_hours_to_charge)
+        eta = await self.get_now() + needed_time
         if self.charge_now_switch.state == "off":
             self.log(f"Not enough time to charge to {self.target_state_of_charge} %, but charging is off. "
                      f"Enabling charging. ETA: {eta}")
         # Always set the state, including reason.
         self.log(f"Not enough time to charge to {self.target_state_of_charge} %. ETA: {eta}")
-        await self.charge_now_switch.set_state(state="on", attributes={"reason": "Not enough time to charge", "eta": eta},
-                                               replace=True)
+        await self.set_charge_now_switch(state="on",
+                                         reason="Not enough time to charge",
+                                         eta=eta)
 
-    async def charge_in_time_slot(self, contiguous_slots):
+    async def charge_in_time_slot(self, contiguous_slots: list[dict], needed_time: timedelta):
         """Starts charging when in a scheduled charging time slot."""
-        if in_time_slot(await self.get_now(), start=contiguous_slots[0]['start'], end=contiguous_slots[0]['end']):
+        now = await self.get_now()
+        if in_time_slot(now, start=contiguous_slots[0]['start'], end=contiguous_slots[0]['end']):
             target_state = "on"
             if self.charge_now_switch.state == "off":
                 self.log("Enabling charging because of schedule.")
@@ -184,18 +197,31 @@ class Scheduler(Hass):
                 self.log("Disabling charging because of schedule.")
             else:
                 self.log("Charging is already disabled.", level="DEBUG")
-        # Set state, including reason and schedule attributes (which may have changed even if charge-now didn't).
-        await self.charge_now_switch.set_state(state=target_state, attributes={"reason": f"scheduled {target_state}",
-                                                                               "schedule": contiguous_slots})
+        eta = calculate_eta(now, needed_time, contiguous_slots)
+        # Set state, including reason, eta, and schedule attributes (which may have changed even if charge-now didn't).
+        await self.set_charge_now_switch(state=target_state,
+                                         reason=f"scheduled {target_state}",
+                                         eta=eta,
+                                         schedule=contiguous_slots)
 
-    def get_min_hours_to_charge(self, current_soc, target_soc=100):
-        """Get the minimum number of hours that the car needs to be charged, i.e. at max charging power."""
-        current_kwh = current_soc / 100 * self.car_battery_size_kwh
-        target_kwh = self.car_battery_size_kwh * target_soc / 100
-        kwh_to_charge = target_kwh - current_kwh
-        max_power_kw = self.charger.max_charging_current * 230 / 1000
-        hours_to_charge = kwh_to_charge / max_power_kw
-        return hours_to_charge
+    async def set_charge_now_switch(self,
+                                    state: str,
+                                    reason: str,
+                                    eta: datetime | None = None,
+                                    schedule: list[dict] | None = None):
+        attributes = {"reason": reason}
+        if eta:
+            attributes['eta'] = str(eta)
+        if schedule:
+            attributes['schedule'] = schedule
+        await self.charge_now_switch.set_state(state=state, attributes=attributes, replace=True)
+
+    def estimate_time_to_charge(self, current_soc, target_soc=100):
+        if current_soc >= target_soc:
+            return timedelta(0)
+        energy_to_charge_kwh = (self.target_state_of_charge - current_soc) / 100 * self.car_battery_size_kwh
+        min_charge_time = charge_time(energy_to_charge_kwh, self.charger.max_charging_current)
+        return min_charge_time / 0.8  # Assume averaging charging rate at 80 % of max.
 
     def get_prices(self, start: datetime, end: datetime):
         tomorrow = self.price_entity.attributes.get("raw_tomorrow", [])
@@ -203,14 +229,13 @@ class Scheduler(Hass):
         return get_prices(parse_prices(today + tomorrow), start, end)
 
 
-def create_schedule(available_periods: list[dict[str, datetime]], num_hours_to_charge: float) -> list[dict[str, datetime]]:
-    needed_time = num_hours_to_charge * timedelta(hours=1)
+def create_schedule(available_periods: list[dict[str, datetime]], needed_time: timedelta) -> list[dict[str, datetime]]:
     if len(available_periods) == 0:
         raise NotEnoughTimeException(needed_time, timedelta(hours=0))
     periods_by_price = sorted(available_periods, key=lambda x: x['value'])
     period = available_periods[0]['end'] - available_periods[0]['start']
     available_time = period * len(available_periods)
-    num_periods_to_charge = ceil(num_hours_to_charge * timedelta(hours=1) / period)
+    num_periods_to_charge = ceil(needed_time / period)
     if num_periods_to_charge > len(periods_by_price):
         raise NotEnoughTimeException(needed_time, available_time)
     periods_to_charge = periods_by_price[:num_periods_to_charge]
@@ -314,3 +339,32 @@ def extrapolate_prices(prices: list[dict[str, Any]], end: datetime) -> list[dict
         filled[-1]['end'] = end
 
     return filled
+
+
+def calculate_eta(now: datetime, expected_charge_time: timedelta, schedule: list[dict] = None) -> datetime:
+    """Calculates the estimated time when charging is done."""
+    start = now
+    charge_time_left = expected_charge_time
+    for slot in (schedule or []):
+        if slot['end'] <= start:
+            # Don't use this slot
+            continue
+        start = start if start > slot['start'] else slot['start']
+
+        if start + charge_time_left < slot['end']:
+            # Charging is completed during the slot.
+            return start + charge_time_left
+
+        # Use the whole slot for charging.
+        charge_time_left -= slot['end'] - start
+        start = slot['end']
+        continue
+
+    # No slots left. Charging will continue until it is completed.
+    return start + charge_time_left
+
+
+def charge_time(energy_kwh: float, current_a: float) -> timedelta:
+    max_power_kw = current_a * VOLTAGE / 1000
+    hours_to_charge = energy_kwh / max_power_kw
+    return timedelta(hours=hours_to_charge)
