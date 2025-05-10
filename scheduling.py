@@ -141,7 +141,6 @@ class Scheduler(Hass):
         except NotEnoughTimeException:
             await self.not_enough_time(time_to_charge)
             return
-        self.log(f"Charging plan:\n{charging_slots}")
 
         # Charge when in time slot.
         await self.charge_in_time_slot(charging_slots, time_to_charge)
@@ -172,7 +171,7 @@ class Scheduler(Hass):
 
     async def not_enough_time(self, needed_time: timedelta):
         """Starts charging when there is not enough time to charge to the desired state of charge."""
-        eta = await self.get_now() + needed_time
+        eta = calculate_eta(await self.get_now(), needed_time)
         if self.charge_now_switch.state == "off":
             self.log(f"Not enough time to charge to {self.target_state_of_charge} %, but charging is off. "
                      f"Enabling charging. ETA: {eta}")
@@ -214,6 +213,8 @@ class Scheduler(Hass):
             attributes['eta'] = str(eta)
         if schedule:
             attributes['schedule'] = schedule
+        self.log(f"Setting charge now switch {state} {attributes}")
+
         await self.charge_now_switch.set_state(state=state, attributes=attributes, replace=True)
 
     def estimate_time_to_charge(self, current_soc, target_soc=100):

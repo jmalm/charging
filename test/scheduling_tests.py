@@ -1,7 +1,8 @@
+from datetime import datetime, timedelta, timezone
 import math
 import random
 import unittest
-from datetime import datetime, timedelta, timezone
+import yaml
 
 from scheduling import extrapolate_prices, create_schedule, NotEnoughTimeException, calculate_eta
 
@@ -129,7 +130,6 @@ class SchedulerTests(unittest.TestCase):
         self.assertRaises(NotEnoughTimeException, create_schedule, available_periods, timedelta(hours=1.6))
 
     def test__create_schedule__advanced(self):
-        import yaml
         # Arrange
         with open('prices-2025-04-14.yaml', 'r') as f:
             data = yaml.load(f, Loader=yaml.FullLoader)
