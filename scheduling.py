@@ -234,12 +234,17 @@ def create_schedule(available_periods: list[dict[str, datetime]], needed_time: t
     if len(available_periods) == 0:
         raise NotEnoughTimeException(needed_time, timedelta(hours=0))
     periods_by_price = sorted(available_periods, key=lambda x: x['value'])
-    period = available_periods[0]['end'] - available_periods[0]['start']
-    available_time = period * len(available_periods)
-    num_periods_to_charge = ceil(needed_time / period)
-    if num_periods_to_charge > len(periods_by_price):
-        raise NotEnoughTimeException(needed_time, available_time)
-    periods_to_charge = periods_by_price[:num_periods_to_charge]
+
+    periods_to_charge = []
+    used_time = timedelta(0)
+    for period in periods_by_price:
+        periods_to_charge.append(period)
+        used_time += period['end'] - period['start']
+        if used_time >= needed_time:
+            break
+    else:
+        raise NotEnoughTimeException(needed_time, used_time)
+
     contiguous_slots = get_contiguous_slots([{'start': h['start'], 'end': h['end']} for h in periods_to_charge])
 
     # TODO: The following is completely wrong.
@@ -267,11 +272,22 @@ def parse_prices(prices: list[dict]) -> list[dict]:
         } for p in prices]
 
 
-def get_prices(known_prices, start, end):
+def get_prices(known_prices: list[dict], start: datetime, end: datetime) -> list[dict]:
+    if start < known_prices[0]['start']:
+        raise ValueError(f"Start time {start} is before the first known price {known_prices[0]['start']}. This is not supported.")
     prices = extrapolate_prices(known_prices, end)
-    return [h for h in prices if
-            (start <= h['start'] < end) or
-            (start < h['end'] <= end)]
+
+    prices = [h for h in prices if
+              (start <= h['start'] < end) or
+              (start < h['end'] <= end)]
+
+    # Start the first slot at the start time. End the last slot at the end time.
+    assert prices[0]['start'] <= start < prices[0]['end'], f"Start time {start} should be within the first price slot {prices[0]}."
+    assert prices[-1]['start'] < end <= prices[-1]['end'], f"End time {end} should be within the last price slot {prices[-1]}."
+    prices[0]['start'] = start
+    prices[-1]['end'] = end
+
+    return prices
 
 
 def in_time_slot(time: datetime, start: datetime, end: datetime):
@@ -319,15 +335,15 @@ def extrapolate_prices(prices: list[dict[str, Any]], end: datetime) -> list[dict
     will be the same as the same period the preceding day.
     """
     filled = [p for p in prices]
-    existing_end = filled[-1]['end']
+    filled_end = lambda : filled[-1]['end']
 
     # Find the corresponding period the day before.
     # Assume that all periods have the same duration.
-    previous_day_periods = (f for f in filled if f['start'] >= existing_end - timedelta(days=1))
+    get_previous_day_period = lambda start: next((p for p in filled if p['start'] >= start - timedelta(days=1)))
 
     # Fill missing periods.
-    while filled[-1]['end'] < end:
-        previous_day_period = next(previous_day_periods)
+    while filled_end() < end:
+        previous_day_period = get_previous_day_period(filled_end())
         period = {
             'start': previous_day_period['start'] + timedelta(days=1),
             'end': previous_day_period['end'] + timedelta(days=1),

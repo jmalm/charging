@@ -4,10 +4,45 @@ import random
 import unittest
 import yaml
 
-from scheduling import extrapolate_prices, create_schedule, NotEnoughTimeException, calculate_eta
+from scheduling import extrapolate_prices, create_schedule, NotEnoughTimeException, calculate_eta, get_prices
 
 
 class SchedulerTests(unittest.TestCase):
+    def test__get_prices__incomplete_last_period(self):
+        # Arrange
+        start = datetime(2025, 1, 1)
+        period = timedelta(seconds=1)
+        end = start + 2 * period
+        prices = list(_build_prices(start, end, period))
+
+        # Act
+        available_prices = get_prices(prices, start, start + 1.5 * period)
+
+        # Assert
+        self.assertEqual(2, len(available_prices), 'Should be 2 periods')
+        self.assertEqual(start, available_prices[0]['start'], 'First period start')
+        self.assertEqual(start + period, available_prices[0]['end'], 'First period end')
+        self.assertEqual(start + period, available_prices[1]['start'], 'Second period start')
+        self.assertEqual(start + 1.5 * period, available_prices[1]['end'], 'Second period end')
+
+    def test__get_prices__incomplete_first_period(self):
+        # Arrange
+        start = datetime(2025, 1, 1)
+        period = timedelta(seconds=1)
+        end = start + 2 * period
+        prices = list(_build_prices(start, end, period))
+
+        # Act
+        available_prices = get_prices(prices, start + 0.5 * period, end)
+
+        # Assert
+        self.assertEqual(2, len(available_prices), 'Should be 2 periods')
+        self.assertEqual(start + 0.5 * period, available_prices[0]['start'], 'First period start')
+        self.assertEqual(start + period, available_prices[0]['end'], 'First period end')
+        self.assertEqual(start + period, available_prices[1]['start'], 'Second period start')
+        self.assertEqual(start + 2 * period, available_prices[1]['end'], 'Second period end')
+
+
     def test__extrapolate_prices__one_missing_day(self):
         self._test__extrapolate_prices(
             start=datetime(2023, 1, 1, 0, 0, 0),
@@ -146,6 +181,32 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(datetime(2025, 4, 14, 5, tzinfo=timezone(timedelta(hours=2))), schedule[0]['end'], 'First period end')
         self.assertEqual(datetime(2025, 4, 15, 12, tzinfo=timezone(timedelta(hours=2))), schedule[1]['start'], 'Second period start')
         self.assertEqual(datetime(2025, 4, 15, 14, tzinfo=timezone(timedelta(hours=2))), schedule[1]['end'], 'Second period end')
+
+    def test__create_schedule__incomplete_last_period(self):
+        # Arrange
+        start = datetime(2025, 1, 1)
+        period = timedelta(seconds=1)
+        available_periods = [
+            {'start': start,              'end': start + period,       'value': 2},
+            {'start': start + period,     'end': start + period * 2,   'value': 3},
+            {'start': start + period * 2, 'end': start + period * 3,   'value': 4},
+            {'start': start + period * 3, 'end': start + period * 3.1, 'value': 1},
+        ]
+        needed_time = period * 1.6
+
+        # Act
+        schedule = create_schedule(available_periods, needed_time)
+
+        # Assert
+        self.assertLessEqual(schedule[0]['end'], available_periods[-1]['end'], 'Charging should end on or before the last period ends')
+        total_scheduled_time = sum([period['end'] - period['start'] for period in schedule], timedelta())
+        self.assertGreaterEqual(total_scheduled_time, needed_time, 'Total scheduled time is less than needed time')
+        self.assertEqual(2, len(schedule), 'Should be 2 periods')
+        self.assertEqual(start, schedule[0]['start'], 'First period start')
+        self.assertEqual(start + period * 2, schedule[0]['end'], 'First period end')
+        # (The third period should be skipped.)
+        self.assertEqual(start + period * 3, schedule[1]['start'], 'Second period start')
+        self.assertEqual(start + period * 3.1, schedule[1]['end'], 'Second period end')
 
     def test__calculate_eta__no_schedule(self):
         # Arrange
