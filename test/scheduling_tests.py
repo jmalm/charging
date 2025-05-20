@@ -42,7 +42,6 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(start + period, available_prices[1]['start'], 'Second period start')
         self.assertEqual(start + 2 * period, available_prices[1]['end'], 'Second period end')
 
-
     def test__extrapolate_prices__one_missing_day(self):
         self._test__extrapolate_prices(
             start=datetime(2023, 1, 1, 0, 0, 0),

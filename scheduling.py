@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from math import ceil
-from typing import Any
-
 from dateutil import parser
+from typing import Any
 
 from appdaemon.plugins.hass.hassapi import Hass
 
@@ -89,6 +87,7 @@ class Scheduler(Hass):
         """Callback for the state of charge sensor."""
         self.log(f"State of charge: {new} %")
         # TODO: Should we reschedule? Maybe if the state of charge has changed significantly?
+        #       Why do we even have both state_of_charge_entity and last_known_state_of_charge_entity?
         if self.reschedule_on_next_state_of_charge_change:
             self.reschedule_on_next_state_of_charge_change = False
             await self.handle_current_state()

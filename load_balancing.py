@@ -113,7 +113,7 @@ class LoadBalancer(hass.Hass):
         if self.charger.status == 'disconnected':
             # Set the circuit dynamic limit to 10 A. If the smart charging / load balancing is not working,
             # for whatever reason, the next time the charger is connected, charging will be enabled, but
-            # limited to 10 A (to reduce the risk of burning a fuse).
+            # limited to 10 A (to reduce the risk of overloading the circuit).
             target_currents = Currents(10, 10, 10)
             if self.charger.circuit_dynamic_limit == target_currents:
                 return  # Nothing to do.
