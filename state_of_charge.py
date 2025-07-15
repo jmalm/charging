@@ -66,5 +66,11 @@ class StateOfChargeCalculator(hass.Hass):
         return energy_consumed
 
     def update_last_known_state_of_charge(self, entity, attribute, old, new, kwargs):
+        # Try to convert the new state to a float.
+        try:
+            value = float(new)
+        except ValueError:
+            self.log(f"Could not convert {new} to float")
+            return
         self.log(f"Updating last known state of charge to {new}")
         self.last_known_state_of_charge_entity.set_state(state=new)
