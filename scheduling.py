@@ -226,7 +226,13 @@ class Scheduler(Hass):
     def get_prices(self, start: datetime, end: datetime):
         tomorrow = self.price_entity.attributes.get("raw_tomorrow", [])
         today = self.price_entity.attributes.get("raw_today", [])
-        return get_prices(parse_prices(today + tomorrow), start, end)
+        known_prices = parse_prices(today + tomorrow)
+        try:
+            return get_prices(known_prices, start, end)
+        except IndexError:
+            # I have once seen this happen, but wasn't able to find the cause. Log input data in case it happens again.
+            self.error(f"Failed to get prices (known prices: {known_prices}, start: {start}, end: {end}")
+            raise
 
 
 def create_schedule(available_periods: list[dict[str, datetime]], needed_time: timedelta) -> list[dict[str, datetime]]:
