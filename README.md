@@ -174,6 +174,13 @@ If the departure time is beyond the time for which the price is known, the app w
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
+## Roadmap
+
+[ ] Add minimum charge - charge immediately to this level
+[ ] Add minimum next-morning charge - try to make sure that the state of charge is at this level next morning (6:00)
+[ ] Support 2-phase and 3-phase charging
+[ ] Peak shaving functionality - help keep total energy usage to below some limit each hour
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
