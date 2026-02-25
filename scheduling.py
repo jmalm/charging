@@ -24,6 +24,7 @@ class Scheduler(Hass):
     car_battery_size_kwh = 64
     target_state_of_charge = 100
     reschedule_on_next_state_of_charge_change = False
+    price_increase_factor = 1.2
 
     async def initialize(self):
         # Charger and home
@@ -59,6 +60,11 @@ class Scheduler(Hass):
         # Electricity price
         price_entity_id = str(self.args['price_entity_id'])
         self.price_entity = self.get_entity(price_entity_id)
+
+        # Price increase factor for extrapolation (default 1.2 = 20% increase)
+        if 'price_increase_factor' in self.args:
+            self.price_increase_factor = float(self.args['price_increase_factor'])
+            self.log(f"Price increase factor set to: {self.price_increase_factor}")
 
         # Run scheduling every half hour + 1 minute.
         next_occurrence = round_datetime_up(await self.get_now(), timedelta(minutes=30), timedelta(minutes=1))
@@ -228,7 +234,7 @@ class Scheduler(Hass):
         today = self.price_entity.attributes.get("raw_today", [])
         known_prices = parse_prices(today + tomorrow)
         try:
-            return get_prices(known_prices, start, end)
+            return get_prices(known_prices, start, end, self.price_increase_factor)
         except IndexError:
             # I have once seen this happen, but wasn't able to find the cause. Log input data in case it happens again.
             self.error(f"Failed to get prices (known prices: {known_prices}, start: {start}, end: {end}")
@@ -277,10 +283,10 @@ def parse_prices(prices: list[dict]) -> list[dict]:
         } for p in prices]
 
 
-def get_prices(known_prices: list[dict], start: datetime, end: datetime) -> list[dict]:
+def get_prices(known_prices: list[dict], start: datetime, end: datetime, price_increase_factor: float = 1.2) -> list[dict]:
     if start < known_prices[0]['start']:
         raise ValueError(f"Start time {start} is before the first known price {known_prices[0]['start']}. This is not supported.")
-    prices = extrapolate_prices(known_prices, end)
+    prices = extrapolate_prices(known_prices, end, price_increase_factor)
 
     prices = [h for h in prices if
               (start <= h['start'] < end) or
@@ -334,10 +340,10 @@ def round_datetime_up(
     return rounded + offset
 
 
-def extrapolate_prices(prices: list[dict[str, Any]], end: datetime) -> list[dict[str, Any]]:
+def extrapolate_prices(prices: list[dict[str, Any]], end: datetime, price_increase_factor: float = 1.2) -> list[dict[str, Any]]:
     """
     Fill missing periods at the end of *prices*, assuming that prices
-    will be the same as the same period the preceding day.
+    will increase by the given factor each day (default 1.2 = 20% increase).
     """
     filled = [p for p in prices]
     filled_end = lambda : filled[-1]['end']
@@ -352,7 +358,7 @@ def extrapolate_prices(prices: list[dict[str, Any]], end: datetime) -> list[dict
         period = {
             'start': previous_day_period['start'] + timedelta(days=1),
             'end': previous_day_period['end'] + timedelta(days=1),
-            'value': previous_day_period['value']
+            'value': previous_day_period['value'] * price_increase_factor
         }
         filled.append(period)
 
