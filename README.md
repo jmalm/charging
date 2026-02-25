@@ -63,7 +63,7 @@ load_balancing:
   charger_status_entity_id: sensor.easee_home_xxxxx_status
   charger_current_entity_id: sensor.easee_home_xxxxx_current
   circuit_dynamic_limit_entity_id: sensor.easee_home_xxxxx_dynamic_circuit_limit
-
+  one_phase_charging_fixed_phase: "P1" # Optional: specify which phase to always use (P1, P2, or P3)
 ```
 
 The schedule and estimated time of reaching the desired state of charge are added as attributes to the `Car charge now`
@@ -153,6 +153,7 @@ entities:
 ## Usage
 
 In home assistant, switch on the following:
+
 - `Car smart charging` (input boolean)
 - `Car load balance` (input boolean)
 - `Car one phase charging` (input boolean)
@@ -165,6 +166,16 @@ If ever the circuit dynamic limit needs to be manually reset (for example if you
 this can be done in the Easee app.
 
 If the departure time is beyond the time for which the price is known, the app will repeat the last day's prices.
+
+### Configuration Options
+
+#### `one_phase_charging_fixed_phase` (Optional)
+
+When `one_phase_charging` is enabled, you can optionally specify a fixed phase to always use for charging. This is useful if you want to ensure the charger always uses a specific phase (e.g., phase 1).
+
+Allowed values: `P1`, `P2`, `P3`
+
+If this option is not specified, the load balancer will automatically choose the phase with the lowest load.
 
 ## Contributing
 
@@ -190,4 +201,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 Jakob Malm - [@jmalm](https://github.com/jmalm)
 
 Project Link: [https://github.com/jmalm/charging](https://github.com/jmalm/charging)
-

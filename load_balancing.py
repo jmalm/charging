@@ -23,6 +23,7 @@ class LoadBalancer(hass.Hass):
     circuit_dynamic_limit_target: Currents | None = None
     circuit_dynamic_limit_target_timeout = 120  # seconds
     reset_circuit_dynamic_limit_target_timer: str | None = None
+    one_phase_charging_fixed_phase: Phase | None = None
 
     def initialize(self):
         # Should we do load balancing?
@@ -40,6 +41,15 @@ class LoadBalancer(hass.Hass):
         self.one_phase_charging = self.get_state(do_one_phase_charging_entity_id) == 'on'
         assert self.one_phase_charging, "Three-phase charging is not supported yet"
         self.listen_state(self.one_phase_charging_cb, do_one_phase_charging_entity_id)
+
+        # Optional: Specific phase to use for one-phase charging
+        if 'one_phase_charging_fixed_phase' in self.args:
+            fixed_phase = str(self.args['one_phase_charging_fixed_phase']).upper()
+            try:
+                self.one_phase_charging_fixed_phase = Phase[fixed_phase]
+                self.log(f"One-phase charging fixed phase set to: {self.one_phase_charging_fixed_phase.name}")
+            except KeyError:
+                self.log(f"Invalid phase '{fixed_phase}'. Must be one of: P1, P2, P3", level="WARNING")
 
         # Shall charging be on now?
         charge_now_entity_id = str(self.args['charge_now_entity_id'])
@@ -210,6 +220,10 @@ class LoadBalancer(hass.Hass):
 
     def get_charging_phase(self):
         """Get the phase that charging is enabled on."""
+        # If a fixed phase is configured, always use it
+        if self.one_phase_charging_fixed_phase is not None:
+            return self.one_phase_charging_fixed_phase
+        
         # Do we have a specific phase enabled by circuit dynamic limit?
         current_limit = self.charger.circuit_dynamic_limit
         if self.min_charging_current <= current_limit.max() == current_limit.p1 + current_limit.p2 + current_limit.p3:
